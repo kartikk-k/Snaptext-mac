@@ -31,6 +31,13 @@ final class HotkeyMonitor {
         self.hotkey = hotkey
     }
 
+    private var paused = false
+
+    /// Temporarily ignore the hotkey (e.g. while the user is recording a new one,
+    /// so our own global shortcut doesn't swallow their key press).
+    func pause() { paused = true }
+    func resume() { paused = false }
+
     func stop() {
         if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
         if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
@@ -38,21 +45,9 @@ final class HotkeyMonitor {
 
     @discardableResult
     private func handle(_ event: NSEvent) -> Bool {
+        guard !paused else { return false }
         guard hotkey.matches(event) else { return false }
         handler?()
         return true
-    }
-
-    // MARK: - Accessibility permission
-
-    /// Whether the process is trusted for Accessibility (needed for the global monitor).
-    static var isTrusted: Bool {
-        AXIsProcessTrusted()
-    }
-
-    /// Prompt the user to grant Accessibility permission (opens System Settings).
-    static func promptForTrust() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-        AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 }

@@ -15,17 +15,24 @@ enum Toast {
         dismissWorkItem?.cancel()
 
         let maxWidth: CGFloat = 520
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
         let text = NSTextField(labelWithString: message)
-        text.font = .systemFont(ofSize: 14, weight: .medium)
+        text.font = font
         text.textColor = .white
         text.alignment = .center
         text.lineBreakMode = .byTruncatingTail
         text.maximumNumberOfLines = 2
+        text.cell?.truncatesLastVisibleLine = true
         text.preferredMaxLayoutWidth = maxWidth - 40
 
-        let fitting = text.sizeThatFits(NSSize(width: maxWidth - 40, height: 100))
+        // Measure natural size, then clamp the height to at most two lines so a
+        // long single-line result can't stretch the overlay taller than 2 lines.
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let maxTextHeight = lineHeight * 2
+        let fitting = text.sizeThatFits(NSSize(width: maxWidth - 40, height: maxTextHeight))
+        let textHeight = min(fitting.height, maxTextHeight)
         let contentWidth = min(maxWidth, max(160, fitting.width + 40))
-        let contentHeight = max(44, fitting.height + 24)
+        let contentHeight = max(44, textHeight + 24)
 
         let background = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: contentHeight))
         background.material = .hudWindow
@@ -36,8 +43,8 @@ enum Toast {
         background.layer?.masksToBounds = true
         background.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
 
-        text.frame = NSRect(x: 20, y: (contentHeight - fitting.height) / 2,
-                            width: contentWidth - 40, height: fitting.height)
+        text.frame = NSRect(x: 20, y: (contentHeight - textHeight) / 2,
+                            width: contentWidth - 40, height: textHeight)
         background.addSubview(text)
 
         let panel = existingOrNewPanel()

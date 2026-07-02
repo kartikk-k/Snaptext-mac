@@ -1,26 +1,64 @@
 import AppKit
 
-/// A tiny panel that captures the next key-combo the user presses and reports it back.
+/// A view that becomes first responder and captures the next key combination.
+private final class KeyCaptureView: NSView {
+    var onCombo: ((UInt16, NSEvent.ModifierFlags) -> Void)?
+    var onCancel: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { true }
+
+    /// Intercept key equivalents (e.g. ⌘-combos) that would otherwise be swallowed
+    /// by the menu / window before keyDown is delivered.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        handle(event)
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        handle(event)
+    }
+
+    private func handle(_ event: NSEvent) {
+        if event.keyCode == 53 { // Esc
+            onCancel?()
+            return
+        }
+        let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let mods = event.modifierFlags.intersection(mask)
+        guard !mods.isEmpty else {
+            NSSound.beep() // require at least one modifier
+            return
+        }
+        onCombo?(event.keyCode, mods)
+    }
+}
+
+/// A tiny window that captures the next key-combo the user presses and reports it back.
 final class ShortcutRecorderWindow: NSObject, NSWindowDelegate {
     private var window: NSWindow?
-    private var monitor: Any?
     private var onChange: ((Hotkey) -> Void)?
+    private var onClosed: (() -> Void)?
     private let label = NSTextField(labelWithString: "")
     private var current: Hotkey
+    private let captureView = KeyCaptureView(frame: NSRect(x: 0, y: 0, width: 340, height: 150))
 
     init(current: Hotkey) {
         self.current = current
     }
 
-    func show(onChange: @escaping (Hotkey) -> Void) {
+    /// - onChange: called with each new hotkey.
+    /// - onClosed: called when the window closes (used to resume the global hotkey).
+    func show(onChange: @escaping (Hotkey) -> Void, onClosed: @escaping () -> Void) {
         self.onChange = onChange
+        self.onClosed = onClosed
 
-        if window != nil {
-            bringToFront()
+        if let win = window {
+            bringToFront(win)
             return
         }
 
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 150))
+        let content = captureView
 
         let title = NSTextField(labelWithString: "Record Shortcut")
         title.font = .boldSystemFont(ofSize: 15)
@@ -49,6 +87,17 @@ final class ShortcutRecorderWindow: NSObject, NSWindowDelegate {
         hint.frame = NSRect(x: 20, y: 14, width: 300, height: 16)
         content.addSubview(hint)
 
+        captureView.onCombo = { [weak self] keyCode, mods in
+            guard let self else { return }
+            let hk = Hotkey(keyCode: keyCode, modifiers: mods.rawValue)
+            self.current = hk
+            self.label.stringValue = hk.displayString
+            hk.save()
+            self.onChange?(hk)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self.close() }
+        }
+        captureView.onCancel = { [weak self] in self?.close() }
+
         let win = NSWindow(contentRect: content.frame,
                            styleMask: [.titled, .closable],
                            backing: .buffered,
@@ -60,59 +109,27 @@ final class ShortcutRecorderWindow: NSObject, NSWindowDelegate {
         win.center()
         self.window = win
 
-        NSApp.setActivationPolicy(.regular) // temporarily so the panel can take focus
+        // Become a regular app briefly so the window can take keyboard focus.
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         win.makeKeyAndOrderFront(nil)
-
-        startCapturing()
+        win.makeFirstResponder(captureView)
     }
 
-    private func bringToFront() {
+    private func bringToFront(_ win: NSWindow) {
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    private func startCapturing() {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self else { return event }
-
-            if event.type == .keyDown {
-                if event.keyCode == 53 { // Esc
-                    self.close()
-                    return nil
-                }
-                let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-                let mods = event.modifierFlags.intersection(mask)
-                guard !mods.isEmpty else {
-                    NSSound.beep() // require a modifier
-                    return nil
-                }
-                let hk = Hotkey(keyCode: event.keyCode, modifiers: mods.rawValue)
-                self.current = hk
-                self.label.stringValue = hk.displayString
-                hk.save()
-                self.onChange?(hk)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self.close() }
-                return nil
-            }
-            return nil // swallow flagsChanged while recording
-        }
-    }
-
-    private func stopCapturing() {
-        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        win.makeKeyAndOrderFront(nil)
+        win.makeFirstResponder(captureView)
     }
 
     func close() {
-        stopCapturing()
         window?.close()
-        window = nil
-        NSApp.setActivationPolicy(.accessory) // back to menu-bar-only
     }
 
     func windowWillClose(_ notification: Notification) {
-        stopCapturing()
         window = nil
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.accessory) // back to menu-bar-only
+        onClosed?()
     }
 }

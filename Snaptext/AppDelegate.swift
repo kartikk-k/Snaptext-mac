@@ -5,6 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let capture = TextCapture()
     private let hotkeyMonitor = HotkeyMonitor()
     private var recorder: ShortcutRecorderWindow?
+    private var onboarding: OnboardingWindow?
+    private var about: AboutWindow?
 
     private var hotkey = Hotkey.load()
     private var shortcutMenuItem: NSMenuItem?
@@ -17,10 +19,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         startHotkey()
 
-        // Ask for Accessibility on first launch so the global shortcut works
-        // even when Snaptext isn't the focused app.
-        if !HotkeyMonitor.isTrusted {
-            HotkeyMonitor.promptForTrust()
+        // Register with TCC as a screen recorder so Snaptext appears (with a toggle)
+        // in System Settings ▸ Screen & System Audio Recording. Our real crop uses
+        // the `screencapture` subprocess, so without this touch the OS never lists us.
+        Permissions.registerAsScreenRecorder()
+
+        // First time the app runs without all permissions, show the onboarding
+        // window so the user can grant everything up front from one place.
+        if !Permissions.allGranted {
+            showOnboarding()
         }
     }
 
@@ -59,11 +66,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(shortcutItem)
         shortcutMenuItem = shortcutItem
 
-        let accessibilityItem = NSMenuItem(title: "Accessibility Permission…",
-                                           action: #selector(openAccessibility),
-                                           keyEquivalent: "")
-        accessibilityItem.target = self
-        menu.addItem(accessibilityItem)
+        let permissionsItem = NSMenuItem(title: "Permissions…",
+                                         action: #selector(showPermissions),
+                                         keyEquivalent: "")
+        permissionsItem.target = self
+        menu.addItem(permissionsItem)
+
+        let aboutItem = NSMenuItem(title: "About Snaptext",
+                                   action: #selector(showAbout),
+                                   keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
 
         menu.addItem(.separator())
 
@@ -90,32 +103,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     @objc private func captureText() {
+        // First actual use: fire both permission prompts together. If anything is
+        // still missing, don't start the crop — let the user grant, then retry.
+        guard Permissions.ensureAll() else {
+            Permissions.openSettings()
+            Toast.show("Allow Accessibility & Screen Recording, then press the shortcut again")
+            return
+        }
         capture.captureAndRecognize { [weak self] result in
             self?.handle(result)
         }
     }
 
     @objc private func recordShortcut() {
+        // Pause the global hotkey so it doesn't swallow the keys being recorded.
+        hotkeyMonitor.pause()
         let rec = ShortcutRecorderWindow(current: hotkey)
         recorder = rec
-        rec.show { [weak self] newHotkey in
+        rec.show(onChange: { [weak self] newHotkey in
             guard let self else { return }
             self.hotkey = newHotkey
             self.hotkeyMonitor.update(to: newHotkey)
             self.shortcutMenuItem?.title = self.shortcutTitle()
             if let item = self.captureMenuItem { self.applyKeyEquivalent(to: item) }
-        }
+        }, onClosed: { [weak self] in
+            self?.hotkeyMonitor.resume()
+            self?.recorder = nil
+        })
     }
 
-    @objc private func openAccessibility() {
-        if HotkeyMonitor.isTrusted {
-            Toast.show("Accessibility is already granted — the shortcut is active")
-        } else {
-            HotkeyMonitor.promptForTrust()
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
-        }
+    @objc private func showPermissions() {
+        showOnboarding()
+    }
+
+    private func showOnboarding() {
+        let win = OnboardingWindow()
+        onboarding = win
+        win.show(onClosed: { [weak self] in self?.onboarding = nil })
+    }
+
+    @objc private func showAbout() {
+        let win = AboutWindow()
+        about = win
+        win.show()
     }
 
     // MARK: - Result handling
