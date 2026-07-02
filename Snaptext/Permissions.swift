@@ -11,30 +11,45 @@ enum Permissions {
 
     static var allGranted: Bool { accessibilityGranted && screenRecordingGranted }
 
-    // MARK: - Individual requests
+    // Track whether we've already asked this launch, so a second "Allow" click
+    // falls back to opening System Settings (macOS only shows each dialog once).
+    private static var askedAccessibility = false
+    private static var askedScreenRecording = false
 
-    /// Show the Accessibility permission prompt (no-op if already granted).
-    static func requestAccessibility() {
-        guard !accessibilityGranted else { return }
+    // MARK: - Individual requests
+    //
+    // Each returns `true` if it handled the request in-app (showed the system
+    // dialog), or `false` if the caller should fall back to opening the Settings
+    // pane (already granted, or already asked once this launch).
+
+    /// Show the Accessibility permission prompt. Only fires from an explicit user action.
+    @discardableResult
+    static func requestAccessibility() -> Bool {
+        guard !accessibilityGranted else { return false }
+        guard !askedAccessibility else { return false }
+        askedAccessibility = true
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         AXIsProcessTrustedWithOptions(options as CFDictionary)
+        return true
     }
 
-    /// Show the Screen Recording permission prompt and register Snaptext in the
-    /// Screen Recording list.
+    /// Show the Screen Recording permission prompt and register Snaptext in the list.
+    /// Only fires from an explicit user action (clicking "Allow").
     ///
-    /// The real crop is done by the `screencapture` subprocess, which means our own
-    /// process never records the screen and macOS would otherwise never list us.
-    /// To make Snaptext appear in System Settings ▸ Screen & System Audio Recording,
-    /// we perform one tiny *in-process* screen read here. That read is what TCC uses
-    /// to register the app; it does not change the `screencapture -i` capture flow.
-    static func requestScreenRecording() {
-        // Ask via the official API first (shows the system prompt if needed).
+    /// The real crop is done by the `screencapture` subprocess, so our own process
+    /// never records the screen and macOS would otherwise never list us. The
+    /// in-process ScreenCaptureKit touch below is what registers Snaptext in
+    /// System Settings ▸ Screen & System Audio Recording; it does not change the
+    /// `screencapture -i` capture flow.
+    @discardableResult
+    static func requestScreenRecording() -> Bool {
+        guard !screenRecordingGranted else { return false }
+        guard !askedScreenRecording else { return false }
+        askedScreenRecording = true
+        // Shows the system prompt and registers us with TCC (adds us to the list).
         CGRequestScreenCaptureAccess()
-
-        // Then do a minimal in-process capture so TCC registers Snaptext in the list.
-        // A 1×1 read at the origin is enough to trip the screen-recording check.
         registerAsScreenRecorder()
+        return true
     }
 
     /// Touch the screen-recording APIs from our own process, purely to register the
@@ -46,16 +61,6 @@ enum Permissions {
         SCShareableContent.getWithCompletionHandler { _, _ in
             // Result ignored — we only need the query to run so TCC registers us.
         }
-    }
-
-    /// Fire both system permission prompts at once (no-ops for already-granted ones).
-    /// Returns `true` if everything is granted (safe to proceed).
-    @discardableResult
-    static func ensureAll() -> Bool {
-        if allGranted { return true }
-        requestScreenRecording()
-        requestAccessibility()
-        return allGranted
     }
 
     // MARK: - Open Settings panes
@@ -70,11 +75,5 @@ enum Permissions {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
-    }
-
-    /// Open whichever panes are still needed.
-    static func openSettings() {
-        if !accessibilityGranted { openAccessibilitySettings() }
-        if !screenRecordingGranted { openScreenRecordingSettings() }
     }
 }

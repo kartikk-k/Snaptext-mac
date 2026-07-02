@@ -4,9 +4,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let capture = TextCapture()
     private let hotkeyMonitor = HotkeyMonitor()
-    private var recorder: ShortcutRecorderWindow?
-    private var onboarding: OnboardingWindow?
-    private var about: AboutWindow?
+    private let prefs = PreferencesWindow.shared
 
     private var hotkey = Hotkey.load()
     private var shortcutMenuItem: NSMenuItem?
@@ -18,16 +16,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         startHotkey()
+        wirePreferences()
 
-        // Register with TCC as a screen recorder so Snaptext appears (with a toggle)
-        // in System Settings ▸ Screen & System Audio Recording. Our real crop uses
-        // the `screencapture` subprocess, so without this touch the OS never lists us.
-        Permissions.registerAsScreenRecorder()
-
-        // First time the app runs without all permissions, show the onboarding
-        // window so the user can grant everything up front from one place.
+        // Show the unified window on the Permissions tab whenever a permission is
+        // still missing — on first launch AND on every restart until everything is
+        // granted. No system dialogs fire here; those only appear when the user
+        // clicks "Allow".
         if !Permissions.allGranted {
-            showOnboarding()
+            prefs.show(.permissions)
+        }
+    }
+
+    private func wirePreferences() {
+        prefs.onHotkeyChange = { [weak self] newHotkey in
+            guard let self else { return }
+            self.hotkey = newHotkey
+            self.hotkeyMonitor.update(to: newHotkey)
+            self.shortcutMenuItem?.title = self.shortcutTitle()
+            if let item = self.captureMenuItem { self.applyKeyEquivalent(to: item) }
+        }
+        // Pause the global hotkey while the Shortcut tab is capturing keys.
+        prefs.onShortcutRecordingChanged = { [weak self] recording in
+            if recording { self?.hotkeyMonitor.pause() } else { self?.hotkeyMonitor.resume() }
         }
     }
 
@@ -60,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         let shortcutItem = NSMenuItem(title: shortcutTitle(),
-                                      action: #selector(recordShortcut),
+                                      action: #selector(showShortcut),
                                       keyEquivalent: "")
         shortcutItem.target = self
         menu.addItem(shortcutItem)
@@ -103,11 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     @objc private func captureText() {
-        // First actual use: fire both permission prompts together. If anything is
-        // still missing, don't start the crop — let the user grant, then retry.
-        guard Permissions.ensureAll() else {
-            Permissions.openSettings()
-            Toast.show("Allow Accessibility & Screen Recording, then press the shortcut again")
+        // If a permission is missing, route the user to the Permissions tab rather
+        // than firing system dialogs unprompted.
+        guard Permissions.allGranted else {
+            prefs.show(.permissions)
             return
         }
         capture.captureAndRecognize { [weak self] result in
@@ -115,38 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func recordShortcut() {
-        // Pause the global hotkey so it doesn't swallow the keys being recorded.
-        hotkeyMonitor.pause()
-        let rec = ShortcutRecorderWindow(current: hotkey)
-        recorder = rec
-        rec.show(onChange: { [weak self] newHotkey in
-            guard let self else { return }
-            self.hotkey = newHotkey
-            self.hotkeyMonitor.update(to: newHotkey)
-            self.shortcutMenuItem?.title = self.shortcutTitle()
-            if let item = self.captureMenuItem { self.applyKeyEquivalent(to: item) }
-        }, onClosed: { [weak self] in
-            self?.hotkeyMonitor.resume()
-            self?.recorder = nil
-        })
-    }
-
-    @objc private func showPermissions() {
-        showOnboarding()
-    }
-
-    private func showOnboarding() {
-        let win = OnboardingWindow()
-        onboarding = win
-        win.show(onClosed: { [weak self] in self?.onboarding = nil })
-    }
-
-    @objc private func showAbout() {
-        let win = AboutWindow()
-        about = win
-        win.show()
-    }
+    @objc private func showShortcut()   { prefs.show(.shortcut) }
+    @objc private func showPermissions() { prefs.show(.permissions) }
+    @objc private func showAbout()       { prefs.show(.about) }
 
     // MARK: - Result handling
 
