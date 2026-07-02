@@ -8,6 +8,16 @@ struct Hotkey: Codable, Equatable {
 
     var flags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: modifiers) }
 
+    /// The modifier flags expressed as CGEventFlags (for CGEventTap comparison).
+    var cgFlags: CGEventFlags {
+        var f: CGEventFlags = []
+        if flags.contains(.command) { f.insert(.maskCommand) }
+        if flags.contains(.shift)   { f.insert(.maskShift) }
+        if flags.contains(.option)  { f.insert(.maskAlternate) }
+        if flags.contains(.control) { f.insert(.maskControl) }
+        return f
+    }
+
     static let `default` = Hotkey(
         keyCode: 19, // "2"
         modifiers: NSEvent.ModifierFlags([.command, .shift]).rawValue

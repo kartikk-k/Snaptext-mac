@@ -44,11 +44,10 @@ final class PreferencesWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        // Ensure key focus lands after activation completes (needed for recording).
+        // Ensure the window becomes key after activation completes (so a subsequent
+        // click on the shortcut field can take keyboard focus and record).
         DispatchQueue.main.async { [weak self] in
-            guard let self, let win = self.window else { return }
-            win.makeKeyAndOrderFront(nil)
-            if self.current == .shortcut { self.shortcutView.focusForRecording() }
+            self?.window?.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -125,10 +124,6 @@ final class PreferencesWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
             pane.topAnchor.constraint(equalTo: container.topAnchor),
             pane.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-
-        if tab == .shortcut {
-            DispatchQueue.main.async { [weak self] in self?.shortcutView.focusForRecording() }
-        }
     }
 
     @objc private func toolbarItemSelected(_ sender: NSToolbarItem) {

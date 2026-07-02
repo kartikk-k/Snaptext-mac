@@ -81,7 +81,7 @@ final class PermissionsPane: NSView {
         footer.stringValue = allSet
             ? "All set! Press your shortcut anywhere to capture text."
             : "Click Allow on each permission to get started."
-        footer.textColor = allSet ? .systemGreen : .secondaryLabelColor
+        footer.textColor = NSColor.white.withAlphaComponent(0.65)
     }
 
     @objc private func grantAccessibility() {
@@ -94,15 +94,17 @@ final class PermissionsPane: NSView {
 
 // MARK: - Shortcut Pane
 
-/// Records a new global shortcut using a first-responder key-capture view.
+/// Click-to-record shortcut field. Idle until clicked; while recording it captures
+/// one key combination, then stops.
 final class ShortcutPane: NSView {
     var onChange: ((Hotkey) -> Void)?
+    /// Fired with `true` when recording starts, `false` when it stops — used by the
+    /// app to pause the global hotkey so it doesn't intercept the keys being recorded.
     var onRecordingChanged: ((Bool) -> Void)?
 
-    private let captureView = KeyCaptureView()
-    private let comboLabel = NSTextField(labelWithString: "")
+    private let field = RecordFieldView()
+    private let hint = makeLabel("", font: .systemFont(ofSize: 11), color: .tertiaryLabelColor)
     private var current = Hotkey.load()
-    private var recording = false
 
     init() {
         super.init(frame: .zero)
@@ -112,43 +114,38 @@ final class ShortcutPane: NSView {
 
     private func build() {
         let title = makeLabel("Shortcut", font: .systemFont(ofSize: 18, weight: .bold))
-        let subtitle = makeLabel("Press a key combination to set your capture shortcut.",
+        let subtitle = makeLabel("Click the field, then press a key combination to set your capture shortcut.",
                                  font: .systemFont(ofSize: 12), color: .secondaryLabelColor, lines: 2)
 
-        comboLabel.stringValue = current.displayString
-        comboLabel.alignment = .center
-        comboLabel.font = .monospacedSystemFont(ofSize: 26, weight: .semibold)
-        comboLabel.wantsLayer = true
-        comboLabel.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        comboLabel.layer?.cornerRadius = 12
-        comboLabel.layer?.borderWidth = 1
-        comboLabel.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
-        comboLabel.isBezeled = false
-        comboLabel.drawsBackground = false
-
-        let hint = makeLabel("Needs at least one modifier (⌘ ⌥ ⌃ ⇧). Esc cancels.",
-                             font: .systemFont(ofSize: 11), color: .tertiaryLabelColor)
-        hint.alignment = .center
-
-        captureView.onCombo = { [weak self] keyCode, mods in
+        field.combo = current
+        field.onStartRecording = { [weak self] in
+            self?.onRecordingChanged?(true)
+            self?.updateHint(recording: true)
+        }
+        field.onCombo = { [weak self] keyCode, mods in
             guard let self else { return }
             let hk = Hotkey(keyCode: keyCode, modifiers: mods.rawValue)
             self.current = hk
-            self.comboLabel.stringValue = hk.displayString
+            self.field.combo = hk
             hk.save()
             self.onChange?(hk)
+            self.onRecordingChanged?(false)
+            self.updateHint(recording: false)
         }
-        captureView.onCancel = { [weak self] in
-            self?.comboLabel.stringValue = self?.current.displayString ?? ""
+        field.onCancel = { [weak self] in
+            guard let self else { return }
+            self.field.combo = self.current
+            self.onRecordingChanged?(false)
+            self.updateHint(recording: false)
         }
 
-        for v in [title, subtitle, comboLabel, hint, captureView] as [NSView] {
+        hint.alignment = .center
+        updateHint(recording: false)
+
+        for v in [title, subtitle, field, hint] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
-        // The capture view is invisible but must be in the hierarchy to receive keys.
-        captureView.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        captureView.heightAnchor.constraint(equalToConstant: 1).isActive = true
 
         let pad: CGFloat = 24
         NSLayoutConstraint.activate([
@@ -159,25 +156,117 @@ final class ShortcutPane: NSView {
             subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             subtitle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
 
-            comboLabel.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 24),
-            comboLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
-            comboLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-            comboLabel.heightAnchor.constraint(equalToConstant: 60),
+            field.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 24),
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            field.heightAnchor.constraint(equalToConstant: 60),
 
-            hint.topAnchor.constraint(equalTo: comboLabel.bottomAnchor, constant: 14),
+            hint.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 14),
             hint.centerXAnchor.constraint(equalTo: centerXAnchor),
         ])
     }
 
-    /// Make the capture view first responder so keys are recorded.
-    func focusForRecording() {
-        guard let win = window else { return }
-        win.makeFirstResponder(captureView)
-        if !recording { recording = true; onRecordingChanged?(true) }
+    private func updateHint(recording: Bool) {
+        hint.stringValue = recording
+            ? "Recording… press a combination. Needs a modifier (⌘ ⌥ ⌃ ⇧). Esc cancels."
+            : "Click the field above to change the shortcut."
+        hint.textColor = recording ? .systemOrange : .tertiaryLabelColor
     }
 
-    func endRecording() {
-        if recording { recording = false; onRecordingChanged?(false) }
+    /// Stop recording if this pane is being hidden.
+    func endRecording() { field.stopRecording() }
+}
+
+/// The clickable pill that records a combo. Idle → shows the combo. Clicked →
+/// becomes first responder, shows "Press keys…", captures one combo.
+private final class RecordFieldView: NSControl {
+    var onStartRecording: (() -> Void)?
+    var onCombo: ((UInt16, NSEvent.ModifierFlags) -> Void)?
+    var onCancel: (() -> Void)?
+
+    private let label = NSTextField(labelWithString: "")
+    private var recording = false
+
+    var combo: Hotkey = .default {
+        didSet { if !recording { render() } }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.borderWidth = 1
+        label.font = .monospacedSystemFont(ofSize: 26, weight: .semibold)
+        label.alignment = .center
+        label.isBezeled = false
+        label.drawsBackground = false
+        label.isEditable = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+        ])
+        render()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        if recording { stopRecording() } else { startRecording() }
+    }
+
+    func startRecording() {
+        recording = true
+        window?.makeFirstResponder(self)
+        render()
+        onStartRecording?()
+    }
+
+    func stopRecording() {
+        guard recording else { return }
+        recording = false
+        render()
+        onCancel?()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard recording else { return false }
+        handleKey(event); return true
+    }
+    override func keyDown(with event: NSEvent) {
+        guard recording else { super.keyDown(with: event); return }
+        handleKey(event)
+    }
+
+    private func handleKey(_ event: NSEvent) {
+        if event.keyCode == 53 { // Esc
+            recording = false; render(); onCancel?(); return
+        }
+        let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let mods = event.modifierFlags.intersection(mask)
+        guard !mods.isEmpty else { NSSound.beep(); return }
+        recording = false
+        onCombo?(event.keyCode, mods)
+        render()
+    }
+
+    private func render() {
+        if recording {
+            label.stringValue = "Press keys…"
+            label.textColor = .secondaryLabelColor
+            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+            layer?.borderColor = NSColor.controlAccentColor.cgColor
+        } else {
+            label.stringValue = combo.displayString
+            label.textColor = .labelColor
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        }
     }
 }
 
@@ -266,31 +355,6 @@ func makeLabel(_ text: String, font: NSFont,
     l.lineBreakMode = lines > 1 ? .byWordWrapping : .byTruncatingTail
     l.cell?.wraps = lines > 1
     return l
-}
-
-// MARK: - KeyCaptureView
-
-/// A view that becomes first responder and captures the next key combination.
-final class KeyCaptureView: NSView {
-    var onCombo: ((UInt16, NSEvent.ModifierFlags) -> Void)?
-    var onCancel: (() -> Void)?
-
-    override var acceptsFirstResponder: Bool { true }
-    override func becomeFirstResponder() -> Bool { true }
-
-    /// Intercept key equivalents (e.g. ⌘-combos) that would otherwise be swallowed.
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        handle(event); return true
-    }
-    override func keyDown(with event: NSEvent) { handle(event) }
-
-    private func handle(_ event: NSEvent) {
-        if event.keyCode == 53 { onCancel?(); return } // Esc
-        let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-        let mods = event.modifierFlags.intersection(mask)
-        guard !mods.isEmpty else { NSSound.beep(); return }
-        onCombo?(event.keyCode, mods)
-    }
 }
 
 // MARK: - PillView

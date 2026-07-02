@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu bar utility: never show a Dock icon.
         NSApp.setActivationPolicy(.accessory)
 
+        // Always use dark mode regardless of the system theme.
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+
         setupStatusItem()
         startHotkey()
         wirePreferences()
@@ -44,6 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startHotkey() {
         hotkeyMonitor.start(hotkey) { [weak self] in
             self?.captureText()
+        }
+        // The CGEventTap can only be created once Accessibility is granted. If it
+        // isn't yet, keep retrying so the shortcut comes online without a restart.
+        if !hotkeyMonitor.isActive {
+            let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                self.hotkeyMonitor.reinstallIfNeeded()
+                if self.hotkeyMonitor.isActive { timer.invalidate() }
+            }
+            RunLoop.main.add(t, forMode: .common)
         }
     }
 
