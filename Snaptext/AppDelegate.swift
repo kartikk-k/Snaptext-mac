@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkey = Hotkey.load()
     private var shortcutMenuItem: NSMenuItem?
     private var captureMenuItem: NSMenuItem?
+    private var launchAtLoginMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar utility: never show a Dock icon.
@@ -16,6 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Always use dark mode regardless of the system theme.
         NSApp.appearance = NSAppearance(named: .darkAqua)
+
+        // Launch at login is on by default (first run only, so the user's later
+        // choice is respected).
+        LoginItem.enableByDefaultIfNeeded()
 
         setupStatusItem()
         startHotkey()
@@ -103,6 +108,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        let loginItem = NSMenuItem(title: "Launch at Login",
+                                   action: #selector(toggleLaunchAtLogin),
+                                   keyEquivalent: "")
+        loginItem.target = self
+        loginItem.state = LoginItem.isEnabled ? .on : .off
+        menu.addItem(loginItem)
+        launchAtLoginMenuItem = loginItem
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit Snaptext",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
@@ -140,6 +155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showShortcut()   { prefs.show(.shortcut) }
     @objc private func showPermissions() { prefs.show(.permissions) }
     @objc private func showAbout()       { prefs.show(.about) }
+
+    @objc private func toggleLaunchAtLogin() {
+        let nowEnabled = LoginItem.setEnabled(!LoginItem.isEnabled)
+        launchAtLoginMenuItem?.state = nowEnabled ? .on : .off
+    }
 
     // MARK: - Result handling
 
